@@ -1,0 +1,327 @@
+# doris-data-generator-go
+
+`doris-data-generator-go` is a utility for Apache Doris / SelectDB test data workflows. It can generate synthetic log data from a Doris table DDL, write Parquet files, upload files to OSS/S3-compatible storage, import generated Parquet files through Doris S3 TVF, and copy data between Doris tables by partition or tablet.
+
+## Features
+
+- Generate rows from a Doris `CREATE TABLE` DDL.
+- Configure per-field generation rules with JSON.
+- Generate Parquet files with configurable compression.
+- Split generated Parquet files by log type suffix, for example `*.nginx_access.parquet` and `*.json_log_large.parquet`.
+- Upload generated files to Aliyun OSS / S3-compatible object storage.
+- Import Parquet files from OSS/S3 into Doris by S3 TVF.
+- Filter TVF import by generated log type suffix.
+- Remap string fields to integer values during TVF import or table copy.
+- Copy Doris table data by partition or tablet.
+- Optional cluster routing with `USE @cluster`.
+
+## Requirements
+
+- Go `1.24.x` or newer.
+- Network access for Go module download.
+- `mysql` client in `PATH` when using Doris table copy mode.
+- Doris FE MySQL port for copy mode, usually `9030`.
+- Doris FE HTTP port for Stream Load, usually `8030`.
+- OSS/S3 credentials when upload or TVF import is enabled.
+
+If Go dependencies need a proxy, set it before building:
+
+```bash
+export https_proxy=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
+export all_proxy=socks5://127.0.0.1:7890
+```
+
+## Build
+
+Build for the current machine:
+
+```bash
+go mod tidy
+go build -o doris-data-generator .
+```
+
+Build a Linux x86_64 binary from macOS:
+
+```bash
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/doris-data-generator-linux-amd64 .
+```
+
+Build a macOS Apple Silicon binary:
+
+```bash
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o dist/doris-data-generator-darwin-arm64 .
+```
+
+Run tests:
+
+```bash
+go test ./...
+```
+
+## Generate Parquet Files
+
+Prepare a Doris DDL file, for example `1.sql`, and a generation config, for example `config.json`.
+
+Example `config.json`:
+
+```json
+{
+  "datetime_range": ["2026-03-15 00:00:00", "2026-03-26 23:59:59"],
+  "low_cardinality": {
+    "log_level": true,
+    "_namespace_": true,
+    "app": true
+  },
+  "fields": {
+    "msg": {
+      "log_types": [
+        ["nginx_access", 0.7],
+        ["json_log_large", 0.3]
+      ],
+      "chinese_ratio": 0.3
+    },
+    "log_level": {
+      "values": ["INFO", "WARN", "ERROR", "DEBUG"]
+    },
+    "_namespace_": {
+      "values": [
+        ["kube-system", 0.9],
+        ["opentelemetry", 0.01],
+        ["maxclaw", 0.01],
+        ["sandbox-system", 0.01],
+        ["mon-stack", 0.01],
+        ["flux-system", 0.01],
+        ["infra", 0.01],
+        ["idp-system-appupgrade", 0.01],
+        ["weaver", 0.01],
+        ["mlogs", 0.01]
+      ]
+    },
+    "app": {
+      "values": [
+        ["matrix-agent-manager", 0.6],
+        ["matrix-sandbox-file-gateway", 0.016],
+        ["weaver-llm-gateway-claw", 0.016],
+        ["otel-agent", 0.016],
+        ["notification-controller", 0.016],
+        ["helm-controller", 0.016]
+      ]
+    }
+  }
+}
+```
+
+Generate local Parquet files:
+
+```bash
+./doris-data-generator \
+  --ddl-file ./1.sql \
+  --config-file ./config.json \
+  --rows 10000000 \
+  --chunksize 500000 \
+  --parallel 16 \
+  --writer-parallel 8 \
+  --compression zstd \
+  --output /tmp/ali_virginia_parquet \
+  --no-upload
+```
+
+Notes:
+
+- `datetime_range` is used for datetime-like columns such as `_ctime_`; generated values include microseconds.
+- When `msg.log_types` contains multiple log types, files are split by suffix. A file name may look like `data_20260507_145536.0049.nginx_access.parquet`.
+- If only one log type is needed, keep one entry in `log_types`, for example `[["json_log_large", 1.0]]`.
+- Larger `--chunksize` usually produces larger Parquet files.
+- `--writer-parallel` controls Parquet writer concurrency.
+- `--upload-parallel` controls OSS upload concurrency when upload is enabled.
+
+## Generate And Upload To OSS
+
+```bash
+./doris-data-generator \
+  --ddl-file ./1.sql \
+  --config-file ./config.json \
+  --rows 10000000 \
+  --chunksize 500000 \
+  --parallel 16 \
+  --writer-parallel 8 \
+  --upload-parallel 8 \
+  --compression zstd \
+  --output /tmp/ali_virginia_parquet \
+  --oss-bucket minimax-selectdb-test \
+  --oss-path /doris/generated/logtest/ \
+  --oss-endpoint oss-cn-shanghai-internal.aliyuncs.com \
+  --oss-ak "$OSS_AK" \
+  --oss-sk "$OSS_SK" \
+  --oss-addressing-style virtual-host \
+  --cleanup
+```
+
+For Aliyun OSS, prefer virtual-host style unless the target endpoint explicitly requires path style.
+
+## TVF Import From OSS/S3
+
+Import only one generated log type into a target table:
+
+```bash
+./doris-data-generator \
+  --tvf-import \
+  --tvf-log-type json_log_large \
+  --oss-bucket minimax-selectdb-test \
+  --oss-path /doris/generated/logtest/ \
+  --oss-endpoint oss-cn-shanghai-internal.aliyuncs.com \
+  --oss-ak "$OSS_AK" \
+  --oss-sk "$OSS_SK" \
+  --doris-host 127.0.0.1 \
+  --doris-port 9030 \
+  --doris-database minimax \
+  --doris-table json_log_large_table \
+  --doris-user root \
+  --doris-password "$DORIS_PASSWORD" \
+  --batch-files 10 \
+  --parallel 4
+```
+
+Preview generated SQL without executing:
+
+```bash
+./doris-data-generator \
+  --tvf-import \
+  --tvf-log-type nginx_access \
+  --oss-bucket minimax-selectdb-test \
+  --oss-path /doris/generated/logtest/ \
+  --oss-endpoint oss-cn-shanghai-internal.aliyuncs.com \
+  --oss-ak "$OSS_AK" \
+  --oss-sk "$OSS_SK" \
+  --doris-host 127.0.0.1 \
+  --doris-port 9030 \
+  --doris-database minimax \
+  --doris-table ali_virginia_prod_01_17 \
+  --doris-user root \
+  --doris-password "$DORIS_PASSWORD" \
+  --batch-files 10 \
+  --parallel 4 \
+  --dry-run
+```
+
+If `--tvf-log-type` is omitted, all Parquet files under `--oss-path` are imported.
+
+Run TVF import in a Doris compute cluster:
+
+```bash
+./doris-data-generator \
+  --tvf-import \
+  --tvf-cluster doris_cluster \
+  --oss-bucket minimax-selectdb-test \
+  --oss-path /doris/generated/logtest/ \
+  --oss-endpoint oss-cn-shanghai-internal.aliyuncs.com \
+  --oss-ak "$OSS_AK" \
+  --oss-sk "$OSS_SK" \
+  --doris-host 127.0.0.1 \
+  --doris-port 9030 \
+  --doris-database minimax \
+  --doris-table target_table \
+  --doris-user root \
+  --doris-password "$DORIS_PASSWORD"
+```
+
+This emits `USE @doris_cluster` before insert execution.
+
+## Remap String Field During TVF Import
+
+Example: convert `app` string values to integers starting from `100001`:
+
+```bash
+./doris-data-generator \
+  --tvf-import \
+  --tvf-log-type json_log_large \
+  --tvf-remap-string app \
+  --tvf-remap-string-values 'matrix-agent-manager:100001,matrix-sandbox-file-gateway:100002,weaver-llm-gateway-claw:100003,otel-agent:100004,notification-controller:100005,helm-controller:100006' \
+  --oss-bucket minimax-selectdb-test \
+  --oss-path /doris/generated/logtest/ \
+  --oss-endpoint oss-cn-shanghai-internal.aliyuncs.com \
+  --oss-ak "$OSS_AK" \
+  --oss-sk "$OSS_SK" \
+  --doris-host 127.0.0.1 \
+  --doris-port 9030 \
+  --doris-database minimax \
+  --doris-table target_table \
+  --doris-user root \
+  --doris-password "$DORIS_PASSWORD"
+```
+
+## Copy Doris Table Data
+
+Copy table `A` to table `B` by partition:
+
+```bash
+./doris-data-generator \
+  --database minimax \
+  --source-table ali_virginia_prod_01_09 \
+  --target-table ali_virginia_prod_01_15 \
+  --host 127.0.0.1 \
+  --port 9030 \
+  --user root \
+  --password "$DORIS_PASSWORD" \
+  --copy-mode partition \
+  --parallel 8
+```
+
+Copy by tablet:
+
+```bash
+./doris-data-generator \
+  --database minimax \
+  --source-table source_table \
+  --target-table target_table \
+  --host 127.0.0.1 \
+  --port 9030 \
+  --user root \
+  --password "$DORIS_PASSWORD" \
+  --copy-mode tablet \
+  --parallel 8
+```
+
+Preview copy SQL:
+
+```bash
+./doris-data-generator \
+  --database minimax \
+  --source-table source_table \
+  --target-table target_table \
+  --copy-mode partition \
+  --dry-run
+```
+
+Resume copy from log:
+
+```bash
+./doris-data-generator \
+  --database minimax \
+  --source-table source_table \
+  --target-table target_table \
+  --copy-mode partition \
+  --resume \
+  --log-file partition_copy.log
+```
+
+## Common Parameters
+
+- `--rows`: total generated rows.
+- `--chunksize`: rows per chunk/file group.
+- `--file-size`: target file size such as `128MB` or `1GB`; mutually exclusive with explicit `--partitions`.
+- `--parallel`: generator or execution concurrency.
+- `--writer-parallel`: Parquet writer concurrency.
+- `--upload-parallel`: OSS upload concurrency.
+- `--pipeline-buffer`: number of generated chunks allowed to wait for writers.
+- `--compression`: Parquet compression, for example `snappy` or `zstd`.
+- `--cleanup`: delete local files after successful upload.
+- `--no-upload`: generate local files only.
+- `--dry-run`: preview SQL for copy or TVF import mode.
+
+## Safety Notes
+
+- Do not pass real credentials directly in shell history. Prefer environment variables such as `$OSS_AK`, `$OSS_SK`, and `$DORIS_PASSWORD`.
+- TVF import and copy mode execute `INSERT INTO ... SELECT ...`; validate target tables before running large jobs.
+- For large generation jobs on a 16C/64G machine, a practical starting point is `--parallel 16 --writer-parallel 8 --upload-parallel 8 --chunksize 500000`.
