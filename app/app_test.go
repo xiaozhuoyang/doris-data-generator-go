@@ -48,6 +48,27 @@ func TestBuildFieldConfigs(t *testing.T) {
 	}
 }
 
+func TestBuildFieldConfigsSupportsSingleLogTypeString(t *testing.T) {
+	columns := []config.Column{
+		{Name: "msg", Type: "VARCHAR"},
+	}
+	configJSON := map[string]any{
+		"fields": map[string]any{
+			"msg": map[string]any{
+				"log_types": "json_log_large",
+			},
+		},
+	}
+
+	fieldConfigs := buildFieldConfigs(columns, configJSON)
+	if fieldConfigs["msg"].LogType != "json_log_large" {
+		t.Fatalf("expected single log type string to map to LogType, got %#v", fieldConfigs["msg"])
+	}
+	if len(fieldConfigs["msg"].LogTypes) != 0 {
+		t.Fatalf("expected no weighted log types for single string, got %#v", fieldConfigs["msg"].LogTypes)
+	}
+}
+
 func TestGeneratePartitionRowsParallel(t *testing.T) {
 	genConfig := config.NewGeneratorConfig()
 	genConfig.DatetimeRange = []string{"2026-01-01", "2026-01-03"}
@@ -277,6 +298,23 @@ func TestParseArgsTVFClusterRejectsUnsafeCharacters(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected unsafe cluster name error")
+	}
+}
+
+func TestParseArgsSupportsStreamLoadParallel(t *testing.T) {
+	options, err := parseArgs([]string{
+		"--ddl", "CREATE TABLE t1 (id BIGINT)",
+		"--doris-host", "127.0.0.1",
+		"--doris-database", "db",
+		"--doris-table", "tbl",
+		"--no-parquet",
+		"--stream-load-parallel", "8",
+	})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if options.StreamLoadParallel != 8 {
+		t.Fatalf("expected stream load parallel 8, got %#v", options)
 	}
 }
 

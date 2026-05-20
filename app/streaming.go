@@ -27,6 +27,18 @@ type batchResult struct {
 	Err          error
 }
 
+type streamLoadBatchTask struct {
+	BatchIdx           int64
+	BatchSize          int
+	TimestampOffset    int64
+	PartitionDateRange []string
+}
+
+type streamLoadBatch struct {
+	BatchIdx int64
+	Rows     []map[string]any
+}
+
 func generatePartitionRowsParallel(
 	columns []config.Column,
 	genConfig config.GeneratorConfig,
@@ -136,38 +148,82 @@ func runDorisOnlyStreaming(
 	dorisWriter *writer.DorisWriter,
 	start time.Time,
 ) error {
-	writerCount := maxInt(1, options.Parallel)
+	generatorCount := maxInt(1, options.Parallel)
+	writerCount := resolveStreamLoadParallelism(options.StreamLoadParallel, generatorCount)
 	batchSize := maxInt(1, options.DorisBatchSize)
-	queue := make(chan []map[string]any, writerCount*2)
-	errCh := make(chan error, writerCount)
+	bufferSize := maxInt(1, options.PipelineBuffer) * maxInt(generatorCount, writerCount)
+	taskCh := make(chan streamLoadBatchTask, bufferSize)
+	batchCh := make(chan streamLoadBatch, bufferSize)
+	errCh := make(chan error, generatorCount+writerCount+1)
+	done := make(chan struct{})
+	var cancelOnce sync.Once
+	cancel := func() {
+		cancelOnce.Do(func() {
+			close(done)
+		})
+	}
 	var writtenRows atomic.Int64
+	var generators sync.WaitGroup
 	var writers sync.WaitGroup
+
+	for generatorIdx := 0; generatorIdx < generatorCount; generatorIdx++ {
+		generators.Add(1)
+		go func() {
+			defer generators.Done()
+			localFactory := factory.NewDataFactory(genConfig, cloneFieldConfigs(fieldConfigs))
+			for task := range taskCh {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				localFactory.ResetCounters()
+				localFactory.SetSequenceOffset(task.TimestampOffset)
+				localFactory.SetTimestampOffset(task.TimestampOffset)
+				if len(task.PartitionDateRange) > 0 {
+					localFactory.SetPartitionDateRange(task.PartitionDateRange)
+				} else {
+					localFactory.SetPartitionDateRange(nil)
+				}
+				rows := stripInternalFields(localFactory.GenerateBatch(columns, task.BatchSize))
+				select {
+				case batchCh <- streamLoadBatch{BatchIdx: task.BatchIdx, Rows: rows}:
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+
+	go func() {
+		generators.Wait()
+		close(batchCh)
+	}()
 
 	for writerIdx := 0; writerIdx < writerCount; writerIdx++ {
 		writers.Add(1)
 		go func() {
 			defer writers.Done()
-			for batch := range queue {
-				result, err := dorisWriter.WriteBatch(batch)
+			for batch := range batchCh {
+				result, err := dorisWriter.WriteBatch(batch.Rows)
 				if err != nil {
-					select {
-					case errCh <- err:
-					default:
-					}
+					sendPipelineError(errCh, err)
+					cancel()
 					return
 				}
 				if status := stringValue(result["Status"]); status != "" && status != "Success" {
-					select {
-					case errCh <- fmt.Errorf("doris stream load failed: %v", result):
-					default:
-					}
+					sendPipelineError(errCh, fmt.Errorf("doris stream load failed: %v", result))
+					cancel()
 					return
 				}
-				writtenRows.Add(int64(len(batch)))
+				writtenRows.Add(int64(len(batch.Rows)))
 				printProgress(int(writtenRows.Load()), options.Rows, start)
 			}
 		}()
 	}
+
+	var taskCount int64
+	defer cancel()
 
 	for partitionIdx := 0; partitionIdx < numPartitions; partitionIdx++ {
 		rowsStart := partitionIdx * rowsPerFile
@@ -177,37 +233,36 @@ func runDorisOnlyStreaming(
 		}
 
 		partitionDateRange := dateRangeAt(partitionDates, partitionIdx)
-		rows, err := generatePartitionRowsParallel(
-			columns,
-			genConfig,
-			fieldConfigs,
-			partitionIdx,
-			partitionRows,
-			int64(rowsStart),
-			partitionDateRange,
-			maxInt(1, options.Parallel),
-			maxInt(1, options.ChunkSize),
-		)
-		if err != nil {
-			close(queue)
-			writers.Wait()
-			return err
-		}
-
-		for startIdx := 0; startIdx < len(rows); startIdx += batchSize {
-			select {
-			case err := <-errCh:
-				close(queue)
+		for generated := 0; generated < partitionRows; generated += batchSize {
+			currentBatchSize := minInt(batchSize, partitionRows-generated)
+			task := streamLoadBatchTask{
+				BatchIdx:           taskCount,
+				BatchSize:          currentBatchSize,
+				TimestampOffset:    int64(rowsStart + generated),
+				PartitionDateRange: partitionDateRange,
+			}
+			taskCount++
+			if err := pollPipelineError(errCh); err != nil {
+				cancel()
+				close(taskCh)
+				generators.Wait()
 				writers.Wait()
 				return err
-			default:
 			}
-			endIdx := minInt(len(rows), startIdx+batchSize)
-			queue <- stripInternalFields(rows[startIdx:endIdx])
+			select {
+			case taskCh <- task:
+			case err := <-errCh:
+				cancel()
+				close(taskCh)
+				generators.Wait()
+				writers.Wait()
+				return err
+			}
 		}
 	}
 
-	close(queue)
+	close(taskCh)
+	generators.Wait()
 	writers.Wait()
 	select {
 	case err := <-errCh:
@@ -215,6 +270,13 @@ func runDorisOnlyStreaming(
 	default:
 		return nil
 	}
+}
+
+func resolveStreamLoadParallelism(configured int, generationParallelism int) int {
+	if configured > 0 {
+		return configured
+	}
+	return maxInt(1, generationParallelism)
 }
 
 func cloneFieldConfigs(input map[string]config.FieldConfig) map[string]config.FieldConfig {

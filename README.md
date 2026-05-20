@@ -131,7 +131,7 @@ Notes:
 
 - `datetime_range` is used for datetime-like columns such as `_ctime_`; generated values include microseconds.
 - When `msg.log_types` contains multiple log types, files are split by suffix. A file name may look like `data_20260507_145536.0049.nginx_access.parquet`.
-- If only one log type is needed, keep one entry in `log_types`, for example `[["json_log_large", 1.0]]`.
+- If only one log type is needed, you can write `log_types` as a plain string like `"json_log_large"`, or as one-item array `[["json_log_large", 1.0]]`.
 - Larger `--chunksize` usually produces larger Parquet files.
 - `--writer-parallel` controls Parquet writer concurrency.
 - `--upload-parallel` controls OSS upload concurrency when upload is enabled.
@@ -159,6 +159,38 @@ Notes:
 ```
 
 For Aliyun OSS, prefer virtual-host style unless the target endpoint explicitly requires path style.
+
+## Direct Stream Load To Doris
+
+Use `--no-parquet` together with Doris connection options to generate data and send it directly to Doris through concurrent Stream Load requests. In this mode, generated rows are sent through a bounded in-memory pipeline; the tool no longer keeps a full output chunk in memory before loading.
+
+```bash
+./doris-data-generator \
+  --ddl-file ./1.sql \
+  --config-file ./config.json \
+  --rows 10000000 \
+  --parallel 16 \
+  --stream-load-parallel 8 \
+  --pipeline-buffer 2 \
+  --doris-batch-size 10000 \
+  --doris-host 127.0.0.1 \
+  --doris-port 8030 \
+  --doris-database minimax \
+  --doris-table ali_virginia_prod_01_17 \
+  --doris-user root \
+  --doris-password "$DORIS_PASSWORD" \
+  --group-commit \
+  --no-parquet
+```
+
+Parameter guidance:
+
+- `--parallel` controls data generation workers.
+- `--stream-load-parallel` controls concurrent Stream Load requests. If omitted, it defaults to `--parallel`.
+- `--doris-batch-size` controls rows per Stream Load request.
+- `--pipeline-buffer` controls how many generated batches can wait in memory per worker group.
+- `--doris-port` is the Doris FE HTTP port, usually `8030`, not the MySQL port `9030`.
+- `--group-commit` enables Doris group commit with `group_commit=async_mode`.
 
 ## TVF Import From OSS/S3
 
@@ -312,6 +344,7 @@ Resume copy from log:
 - `--chunksize`: rows per chunk/file group.
 - `--file-size`: target file size such as `128MB` or `1GB`; mutually exclusive with explicit `--partitions`.
 - `--parallel`: generator or execution concurrency.
+- `--stream-load-parallel`: concurrent Doris Stream Load workers for `--no-parquet` direct loading.
 - `--writer-parallel`: Parquet writer concurrency.
 - `--upload-parallel`: OSS upload concurrency.
 - `--pipeline-buffer`: number of generated chunks allowed to wait for writers.

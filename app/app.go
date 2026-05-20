@@ -27,64 +27,65 @@ var (
 )
 
 type Options struct {
-	Version           bool
-	DDL               string
-	DDLFile           string
-	SourceTable       string
-	TargetTable       string
-	Cluster           string
-	CopyMode          string
-	Host              string
-	Port              int
-	User              string
-	Password          string
-	LogFile           string
-	Resume            bool
-	DryRun            bool
-	RemapField        string
-	RemapSrc          string
-	RemapDst          string
-	RemapStringField  string
-	RemapStringValues string
-	TVFImport         bool
-	TVFBatchFiles     int
-	TVFLogType        string
-	TVFRemapString    string
-	TVFRemapValues    string
-	TVFCluster        string
-	SkipSchemaCheck   bool
-	Demo              string
-	DemoFile          string
-	ConfigFile        string
-	Rows              int
-	Partitions        int
-	FileSize          string
-	Output            string
-	OSSBucket         string
-	OSSPath           string
-	OSSEndpoint       string
-	OSSAK             string
-	OSSSK             string
-	OSSAddressing     string
-	Config            string
-	BatchSize         int
-	Compression       string
-	Parallel          int
-	WriterParallel    int
-	UploadParallel    int
-	PipelineBuffer    int
-	ChunkSize         int
-	DorisHost         string
-	DorisPort         int
-	DorisDatabase     string
-	DorisTable        string
-	DorisUser         string
-	DorisPassword     string
-	DorisBatchSize    int
-	GroupCommit       bool
-	NoUpload          bool
-	NoParquet         bool
-	Cleanup           bool
+	Version            bool
+	DDL                string
+	DDLFile            string
+	SourceTable        string
+	TargetTable        string
+	Cluster            string
+	CopyMode           string
+	Host               string
+	Port               int
+	User               string
+	Password           string
+	LogFile            string
+	Resume             bool
+	DryRun             bool
+	RemapField         string
+	RemapSrc           string
+	RemapDst           string
+	RemapStringField   string
+	RemapStringValues  string
+	TVFImport          bool
+	TVFBatchFiles      int
+	TVFLogType         string
+	TVFRemapString     string
+	TVFRemapValues     string
+	TVFCluster         string
+	SkipSchemaCheck    bool
+	Demo               string
+	DemoFile           string
+	ConfigFile         string
+	Rows               int
+	Partitions         int
+	FileSize           string
+	Output             string
+	OSSBucket          string
+	OSSPath            string
+	OSSEndpoint        string
+	OSSAK              string
+	OSSSK              string
+	OSSAddressing      string
+	Config             string
+	BatchSize          int
+	Compression        string
+	Parallel           int
+	WriterParallel     int
+	UploadParallel     int
+	PipelineBuffer     int
+	ChunkSize          int
+	DorisHost          string
+	DorisPort          int
+	DorisDatabase      string
+	DorisTable         string
+	DorisUser          string
+	DorisPassword      string
+	DorisBatchSize     int
+	StreamLoadParallel int
+	GroupCommit        bool
+	NoUpload           bool
+	NoParquet          bool
+	Cleanup            bool
 }
 
 func Run(args []string) error {
@@ -176,7 +177,13 @@ func Run(args []string) error {
 	}
 
 	if dorisWriter != nil && options.NoParquet {
-		fmt.Printf("Using %d parallel workers, Doris batch size %d\n", maxInt(1, options.Parallel), maxInt(1, options.DorisBatchSize))
+		fmt.Printf(
+			"Using %d generation workers, %d Stream Load workers, Doris batch size %d, pipeline buffer %d\n",
+			maxInt(1, options.Parallel),
+			resolveStreamLoadParallelism(options.StreamLoadParallel, maxInt(1, options.Parallel)),
+			maxInt(1, options.DorisBatchSize),
+			maxInt(1, options.PipelineBuffer),
+		)
 		if err := runDorisOnlyStreaming(
 			options,
 			columns,
@@ -538,6 +545,7 @@ func parseArgs(args []string) (Options, error) {
 	fs.StringVar(&options.DorisUser, "doris-user", "root", "Doris username")
 	fs.StringVar(&options.DorisPassword, "doris-password", "", "Doris password")
 	fs.IntVar(&options.DorisBatchSize, "doris-batch-size", 10000, "Doris stream load batch size")
+	fs.IntVar(&options.StreamLoadParallel, "stream-load-parallel", 0, "Number of Doris Stream Load workers (default: parallel)")
 	fs.BoolVar(&options.GroupCommit, "group-commit", false, "Enable Doris group commit")
 	fs.BoolVar(&options.NoUpload, "no-upload", false, "Disable upload even if configured")
 	fs.BoolVar(&options.NoParquet, "no-parquet", false, "Skip parquet generation")
@@ -760,17 +768,76 @@ func applyFieldOverrides(fieldConfig *config.FieldConfig, rawField map[string]an
 		fieldConfig.LogType = stringValue(value)
 	}
 	if value, ok := rawField["log_types"]; ok {
-		if items, ok := value.([]any); ok {
+		switch items := value.(type) {
+		case string:
+			fieldConfig.LogType = stringValue(items)
+		case []string:
+			if len(items) == 1 {
+				fieldConfig.LogType = items[0]
+				break
+			}
+			fieldConfig.LogTypes = make([]config.WeightedLogType, 0, len(items))
+			weight := 1.0 / float64(len(items))
+			for _, item := range items {
+				fieldConfig.LogTypes = append(fieldConfig.LogTypes, config.WeightedLogType{
+					Name:   stringValue(item),
+					Weight: weight,
+				})
+			}
+		case []any:
+			if len(items) == 1 {
+				if single, ok := items[0].(string); ok {
+					fieldConfig.LogType = single
+					break
+				}
+			}
 			fieldConfig.LogTypes = make([]config.WeightedLogType, 0, len(items))
 			for _, item := range items {
-				pair, ok := item.([]any)
-				if !ok || len(pair) != 2 {
-					continue
+				switch pair := item.(type) {
+				case []any:
+					if len(pair) != 2 {
+						continue
+					}
+					fieldConfig.LogTypes = append(fieldConfig.LogTypes, config.WeightedLogType{
+						Name:   stringValue(pair[0]),
+						Weight: floatValue(pair[1]),
+					})
+				case []string:
+					if len(pair) != 2 {
+						continue
+					}
+					fieldConfig.LogTypes = append(fieldConfig.LogTypes, config.WeightedLogType{
+						Name:   stringValue(pair[0]),
+						Weight: floatValue(pair[1]),
+					})
+				case map[string]any:
+					name := stringValue(pair["name"])
+					if name == "" {
+						name = stringValue(pair["value"])
+					}
+					if name == "" {
+						continue
+					}
+					weight := floatValue(pair["weight"])
+					if weight == 0 {
+						weight = 1
+					}
+					fieldConfig.LogTypes = append(fieldConfig.LogTypes, config.WeightedLogType{
+						Name:   name,
+						Weight: weight,
+					})
+				default:
+					if s := stringValue(pair); s != "" {
+						fieldConfig.LogTypes = append(fieldConfig.LogTypes, config.WeightedLogType{
+							Name:   s,
+							Weight: 1,
+						})
+					}
 				}
-				fieldConfig.LogTypes = append(fieldConfig.LogTypes, config.WeightedLogType{
-					Name:   stringValue(pair[0]),
-					Weight: floatValue(pair[1]),
-				})
+			}
+			if len(fieldConfig.LogTypes) == 1 {
+				fieldConfig.LogType = fieldConfig.LogTypes[0].Name
+				fieldConfig.LogTypes = nil
 			}
 		}
 	}
