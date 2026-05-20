@@ -213,7 +213,9 @@ func runDorisOnlyStreaming(
 					cancel()
 					return
 				}
-				logStreamLoadResult(result)
+				if options.Debug {
+					logStreamLoadResult(result)
+				}
 				if status := stringValue(result.Payload["Status"]); status != "" && status != "Success" {
 					sendPipelineError(errCh, fmt.Errorf("doris stream load failed: http=%s status=%s payload=%s", result.HTTPStatus, status, result.Body))
 					cancel()

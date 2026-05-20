@@ -86,6 +86,7 @@ type Options struct {
 	NoUpload           bool
 	NoParquet          bool
 	Cleanup            bool
+	Debug              bool
 }
 
 func Run(args []string) error {
@@ -304,7 +305,7 @@ func runChunkedParquetOutput(
 					}
 				}
 				if dorisWriter != nil {
-					if err := writeToDorisInBatches(dorisWriter, task.rows, options.DorisBatchSize); err != nil {
+					if err := writeToDorisInBatches(dorisWriter, task.rows, options.DorisBatchSize, options.Debug); err != nil {
 						sendPipelineError(errCh, err)
 						return
 					}
@@ -554,6 +555,7 @@ func parseArgs(args []string) (Options, error) {
 	fs.BoolVar(&options.NoUpload, "no-upload", false, "Disable upload even if configured")
 	fs.BoolVar(&options.NoParquet, "no-parquet", false, "Skip parquet generation")
 	fs.BoolVar(&options.Cleanup, "cleanup", false, "Delete local files after upload")
+	fs.BoolVar(&options.Debug, "debug", false, "Print Stream Load responses")
 
 	if err := fs.Parse(args); err != nil {
 		return options, err
@@ -986,7 +988,7 @@ func estimateRowSize(columns []config.Column) int {
 	return int(float64(total) * 1.2)
 }
 
-func writeToDorisInBatches(dorisWriter *writer.DorisWriter, rows []map[string]any, batchSize int) error {
+func writeToDorisInBatches(dorisWriter *writer.DorisWriter, rows []map[string]any, batchSize int, debug bool) error {
 	if batchSize <= 0 {
 		batchSize = 10000
 	}
@@ -996,7 +998,9 @@ func writeToDorisInBatches(dorisWriter *writer.DorisWriter, rows []map[string]an
 		if err != nil {
 			return err
 		}
-		logStreamLoadResult(result)
+		if debug {
+			logStreamLoadResult(result)
+		}
 		if status := stringValue(result.Payload["Status"]); status != "" && status != "Success" {
 			return fmt.Errorf("doris stream load failed: http=%s status=%s payload=%s", result.HTTPStatus, status, result.Body)
 		}

@@ -191,6 +191,7 @@ Parameter guidance:
 - `--pipeline-buffer` controls how many generated batches can wait in memory per worker group.
 - `--doris-port` is the Doris FE HTTP port, usually `8030`, not the MySQL port `9030`.
 - `--group-commit` enables Doris group commit with `group_commit=async_mode`.
+- `--debug` prints Stream Load HTTP status and response body for each batch.
 
 ## TVF Import From OSS/S3
 
