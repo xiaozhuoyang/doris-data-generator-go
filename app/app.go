@@ -996,8 +996,9 @@ func writeToDorisInBatches(dorisWriter *writer.DorisWriter, rows []map[string]an
 		if err != nil {
 			return err
 		}
-		if status := stringValue(result["Status"]); status != "" && status != "Success" {
-			return fmt.Errorf("doris stream load failed: %v", result)
+		logStreamLoadResult(result)
+		if status := stringValue(result.Payload["Status"]); status != "" && status != "Success" {
+			return fmt.Errorf("doris stream load failed: http=%s status=%s payload=%s", result.HTTPStatus, status, result.Body)
 		}
 	}
 	return nil
@@ -1126,6 +1127,21 @@ func printStreamLoadProgress(generated, loaded, total int64, start time.Time) {
 	rate := float64(loaded) / elapsed
 	pct := float64(loaded) * 100 / float64(total)
 	fmt.Printf("\rStream Load: generated=%d loaded=%d/%d (%.2f%%) - %.0f loaded rows/sec", generated, loaded, total, pct, rate)
+}
+
+func logStreamLoadResult(result writer.StreamLoadResult) {
+	payload := result.Body
+	if payload == "" && result.Payload != nil {
+		if bytes, err := json.Marshal(result.Payload); err == nil {
+			payload = string(bytes)
+		}
+	}
+	fmt.Printf(
+		"\nStream Load response: http=%s status=%s payload=%s\n",
+		result.HTTPStatus,
+		stringValue(result.Payload["Status"]),
+		payload,
+	)
 }
 
 func floatValue(value any) float64 {

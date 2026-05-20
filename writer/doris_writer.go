@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,13 @@ type DorisWriter struct {
 	timeout     time.Duration
 	groupCommit bool
 	client      *http.Client
+}
+
+type StreamLoadResult struct {
+	HTTPStatusCode int
+	HTTPStatus     string
+	Body           string
+	Payload        map[string]any
 }
 
 func NewDorisWriter(host string, port int, database, table, username, password string, timeout time.Duration, groupCommit bool) *DorisWriter {
@@ -36,20 +44,28 @@ func NewDorisWriter(host string, port int, database, table, username, password s
 	}
 }
 
-func (w *DorisWriter) WriteBatch(data []map[string]any) (map[string]any, error) {
+func (w *DorisWriter) WriteBatch(data []map[string]any) (StreamLoadResult, error) {
 	if len(data) == 0 {
-		return map[string]any{"Status": "Success", "Message": "No data to write"}, nil
+		return StreamLoadResult{
+			HTTPStatusCode: http.StatusOK,
+			HTTPStatus:     http.StatusText(http.StatusOK),
+			Body:           `{"Status":"Success","Message":"No data to write"}`,
+			Payload: map[string]any{
+				"Status":  "Success",
+				"Message": "No data to write",
+			},
+		}, nil
 	}
 
 	body, err := json.Marshal(data)
 	if err != nil {
-		return nil, fmt.Errorf("marshal stream load payload: %w", err)
+		return StreamLoadResult{}, fmt.Errorf("marshal stream load payload: %w", err)
 	}
 
 	url := fmt.Sprintf("http://%s:%d/api/%s/%s/_stream_load", w.host, w.port, w.database, w.table)
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("build stream load request: %w", err)
+		return StreamLoadResult{}, fmt.Errorf("build stream load request: %w", err)
 	}
 
 	req.SetBasicAuth(w.username, w.password)
@@ -66,18 +82,27 @@ func (w *DorisWriter) WriteBatch(data []map[string]any) (map[string]any, error) 
 
 	resp, err := w.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("stream load failed: %w", err)
+		return StreamLoadResult{}, fmt.Errorf("stream load failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read stream load response: %w", err)
+		return StreamLoadResult{}, fmt.Errorf("read stream load response: %w", err)
 	}
 
-	var result map[string]any
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("parse stream load response: %w", err)
+	result := StreamLoadResult{
+		HTTPStatusCode: resp.StatusCode,
+		HTTPStatus:     resp.Status,
+		Body:           strings.TrimSpace(string(respBody)),
+	}
+	if len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, &result.Payload); err != nil {
+			return result, fmt.Errorf("parse stream load response: %w body=%s", err, result.Body)
+		}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return result, fmt.Errorf("stream load failed: status=%s body=%s", resp.Status, result.Body)
 	}
 	return result, nil
 }
