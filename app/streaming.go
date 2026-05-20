@@ -162,6 +162,7 @@ func runDorisOnlyStreaming(
 			close(done)
 		})
 	}
+	var generatedRows atomic.Int64
 	var writtenRows atomic.Int64
 	var generators sync.WaitGroup
 	var writers sync.WaitGroup
@@ -186,6 +187,7 @@ func runDorisOnlyStreaming(
 					localFactory.SetPartitionDateRange(nil)
 				}
 				rows := stripInternalFields(localFactory.GenerateBatch(columns, task.BatchSize))
+				generatedRows.Add(int64(len(rows)))
 				select {
 				case batchCh <- streamLoadBatch{BatchIdx: task.BatchIdx, Rows: rows}:
 				case <-done:
@@ -217,7 +219,7 @@ func runDorisOnlyStreaming(
 					return
 				}
 				writtenRows.Add(int64(len(batch.Rows)))
-				printProgress(int(writtenRows.Load()), options.Rows, start)
+				printStreamLoadProgress(generatedRows.Load(), writtenRows.Load(), int64(options.Rows), start)
 			}
 		}()
 	}

@@ -177,12 +177,16 @@ func Run(args []string) error {
 	}
 
 	if dorisWriter != nil && options.NoParquet {
+		streamLoadWorkers := resolveStreamLoadParallelism(options.StreamLoadParallel, maxInt(1, options.Parallel))
+		pipelineBatches := maxInt(1, options.PipelineBuffer) * maxInt(maxInt(1, options.Parallel), streamLoadWorkers)
 		fmt.Printf(
-			"Using %d generation workers, %d Stream Load workers, Doris batch size %d, pipeline buffer %d\n",
+			"Using %d generation workers, %d Stream Load workers, Doris batch size %d, pipeline buffer %d (%d queued batches, about %d queued rows max)\n",
 			maxInt(1, options.Parallel),
-			resolveStreamLoadParallelism(options.StreamLoadParallel, maxInt(1, options.Parallel)),
+			streamLoadWorkers,
 			maxInt(1, options.DorisBatchSize),
 			maxInt(1, options.PipelineBuffer),
+			pipelineBatches,
+			pipelineBatches*maxInt(1, options.DorisBatchSize),
 		)
 		if err := runDorisOnlyStreaming(
 			options,
@@ -1112,6 +1116,16 @@ func printProgress(current, total int, start time.Time) {
 	rate := float64(current) / elapsed
 	pct := float64(current) * 100 / float64(total)
 	fmt.Printf("\rProgress: %d/%d (%.2f%%) - %.0f rows/sec", current, total, pct, rate)
+}
+
+func printStreamLoadProgress(generated, loaded, total int64, start time.Time) {
+	elapsed := time.Since(start).Seconds()
+	if elapsed <= 0 {
+		elapsed = 1
+	}
+	rate := float64(loaded) / elapsed
+	pct := float64(loaded) * 100 / float64(total)
+	fmt.Printf("\rStream Load: generated=%d loaded=%d/%d (%.2f%%) - %.0f loaded rows/sec", generated, loaded, total, pct, rate)
 }
 
 func floatValue(value any) float64 {
