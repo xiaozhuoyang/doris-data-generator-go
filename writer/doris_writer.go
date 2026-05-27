@@ -40,7 +40,13 @@ func NewDorisWriter(host string, port int, database, table, username, password s
 		password:    password,
 		timeout:     timeout,
 		groupCommit: groupCommit,
-		client:      &http.Client{Timeout: timeout},
+		client: &http.Client{
+			Timeout: timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				req.SetBasicAuth(username, password)
+				return nil
+			},
+		},
 	}
 }
 
@@ -69,6 +75,14 @@ func (w *DorisWriter) WriteBatch(data []map[string]any) (StreamLoadResult, error
 }
 
 func (w *DorisWriter) WriteReader(body io.Reader, contentLength int64, format string, headers map[string]string) (StreamLoadResult, error) {
+	return w.writeReader(body, contentLength, format, headers, nil)
+}
+
+func (w *DorisWriter) WriteReopenableReader(body io.ReadCloser, contentLength int64, format string, headers map[string]string, getBody func() (io.ReadCloser, error)) (StreamLoadResult, error) {
+	return w.writeReader(body, contentLength, format, headers, getBody)
+}
+
+func (w *DorisWriter) writeReader(body io.Reader, contentLength int64, format string, headers map[string]string, getBody func() (io.ReadCloser, error)) (StreamLoadResult, error) {
 	url := fmt.Sprintf("http://%s:%d/api/%s/%s/_stream_load", w.host, w.port, w.database, w.table)
 	req, err := http.NewRequest(http.MethodPut, url, body)
 	if err != nil {
@@ -76,6 +90,9 @@ func (w *DorisWriter) WriteReader(body io.Reader, contentLength int64, format st
 	}
 	if contentLength >= 0 {
 		req.ContentLength = contentLength
+	}
+	if getBody != nil {
+		req.GetBody = getBody
 	}
 
 	req.SetBasicAuth(w.username, w.password)

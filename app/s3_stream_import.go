@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -165,8 +166,11 @@ func runOneS3StreamLoad(job s3StreamLoadJob, s3Client *writer.S3Client, dorisWri
 	}
 	defer body.Close()
 
-	streamResult, err := dorisWriter.WriteReader(body, contentLength, "parquet", map[string]string{
+	streamResult, err := dorisWriter.WriteReopenableReader(body, contentLength, "parquet", map[string]string{
 		"Content-Type": "application/octet-stream",
+	}, func() (io.ReadCloser, error) {
+		reopened, _, err := s3Client.OpenObjectBody(job.object.Key)
+		return reopened, err
 	})
 	result.durationMs = time.Since(start).Milliseconds()
 	if err != nil {
