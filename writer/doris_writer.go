@@ -61,23 +61,33 @@ func (w *DorisWriter) WriteBatch(data []map[string]any) (StreamLoadResult, error
 	if err != nil {
 		return StreamLoadResult{}, fmt.Errorf("marshal stream load payload: %w", err)
 	}
+	return w.WriteReader(bytes.NewReader(body), int64(len(body)), "json", map[string]string{
+		"Content-Type":      "text/plain; charset=UTF-8",
+		"strip_outer_array": "true",
+		"column_separator":  ",",
+	})
+}
 
+func (w *DorisWriter) WriteReader(body io.Reader, contentLength int64, format string, headers map[string]string) (StreamLoadResult, error) {
 	url := fmt.Sprintf("http://%s:%d/api/%s/%s/_stream_load", w.host, w.port, w.database, w.table)
-	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPut, url, body)
 	if err != nil {
 		return StreamLoadResult{}, fmt.Errorf("build stream load request: %w", err)
 	}
+	if contentLength >= 0 {
+		req.ContentLength = contentLength
+	}
 
 	req.SetBasicAuth(w.username, w.password)
-	req.Header.Set("Content-Type", "text/plain; charset=UTF-8")
-	req.Header.Set("format", "json")
-	req.Header.Set("strip_outer_array", "true")
-	req.Header.Set("column_separator", ",")
 	req.Header.Set("Expect", "100-continue")
+	req.Header.Set("format", format)
+	req.Header.Set("label", generateLabel())
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 	if w.groupCommit {
 		req.Header.Set("group_commit", "async_mode")
-	} else {
-		req.Header.Set("label", generateLabel())
+		req.Header.Del("label")
 	}
 
 	resp, err := w.client.Do(req)

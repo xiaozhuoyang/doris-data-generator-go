@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -27,66 +28,70 @@ var (
 )
 
 type Options struct {
-	Version            bool
-	DDL                string
-	DDLFile            string
-	SourceTable        string
-	TargetTable        string
-	Cluster            string
-	CopyMode           string
-	Host               string
-	Port               int
-	User               string
-	Password           string
-	LogFile            string
-	Resume             bool
-	DryRun             bool
-	RemapField         string
-	RemapSrc           string
-	RemapDst           string
-	RemapStringField   string
-	RemapStringValues  string
-	TVFImport          bool
-	TVFBatchFiles      int
-	TVFLogType         string
-	TVFRemapString     string
-	TVFRemapValues     string
-	TVFCluster         string
-	SkipSchemaCheck    bool
-	Demo               string
-	DemoFile           string
-	ConfigFile         string
-	Rows               int
-	Partitions         int
-	FileSize           string
-	Output             string
-	OSSBucket          string
-	OSSPath            string
-	OSSEndpoint        string
-	OSSAK              string
-	OSSSK              string
-	OSSAddressing      string
-	Config             string
-	BatchSize          int
-	Compression        string
-	Parallel           int
-	WriterParallel     int
-	UploadParallel     int
-	PipelineBuffer     int
-	ChunkSize          int
-	DorisHost          string
-	DorisPort          int
-	DorisDatabase      string
-	DorisTable         string
-	DorisUser          string
-	DorisPassword      string
-	DorisBatchSize     int
-	StreamLoadParallel int
-	GroupCommit        bool
-	NoUpload           bool
-	NoParquet          bool
-	Cleanup            bool
-	Debug              bool
+	Version              bool
+	DDL                  string
+	DDLFile              string
+	SourceTable          string
+	TargetTable          string
+	Cluster              string
+	CopyMode             string
+	Host                 string
+	Port                 int
+	User                 string
+	Password             string
+	LogFile              string
+	Resume               bool
+	DryRun               bool
+	RemapField           string
+	RemapSrc             string
+	RemapDst             string
+	RemapStringField     string
+	RemapStringValues    string
+	RemapIntStringField  string
+	RemapIntStringValues string
+	TVFImport            bool
+	S3Import             bool
+	TVFBatchFiles        int
+	TVFLogType           string
+	TVFRemapString       string
+	TVFRemapValues       string
+	TVFCluster           string
+	SkipSchemaCheck      bool
+	Demo                 string
+	DemoFile             string
+	ConfigFile           string
+	Rows                 int
+	Partitions           int
+	FileSize             string
+	Output               string
+	OSSBucket            string
+	OSSPath              string
+	OSSEndpoint          string
+	OSSAK                string
+	OSSSK                string
+	OSSAddressing        string
+	S3Region             string
+	Config               string
+	BatchSize            int
+	Compression          string
+	Parallel             int
+	WriterParallel       int
+	UploadParallel       int
+	PipelineBuffer       int
+	ChunkSize            int
+	DorisHost            string
+	DorisPort            int
+	DorisDatabase        string
+	DorisTable           string
+	DorisUser            string
+	DorisPassword        string
+	DorisBatchSize       int
+	StreamLoadParallel   int
+	GroupCommit          bool
+	NoUpload             bool
+	NoParquet            bool
+	Cleanup              bool
+	Debug                bool
 }
 
 func Run(args []string) error {
@@ -105,6 +110,9 @@ func Run(args []string) error {
 	}
 	if options.TVFImport {
 		return runTVFImport(options)
+	}
+	if options.S3Import {
+		return runS3StreamLoadImport(options)
 	}
 
 	columns, err := parseDDL(options)
@@ -233,12 +241,18 @@ func isCopyMode(options Options) bool {
 }
 
 func uploadFilesToOSS(ossWriter *writer.OSSWriter, filenames []string, cleanup bool) error {
+	var uploadedTotal int64
 	for _, filename := range filenames {
+		fileSize, err := localFileSize(filename)
+		if err != nil {
+			return fmt.Errorf("stat upload file %s: %w", filename, err)
+		}
 		objectKey, err := ossWriter.UploadFile(filename)
 		if err != nil {
 			return fmt.Errorf("upload %s to OSS: %w", filename, err)
 		}
-		fmt.Printf("Uploaded to OSS: %s\n", objectKey)
+		uploadedTotal += fileSize
+		fmt.Printf("Uploaded to OSS: %s file_size=%s uploaded_total=%s\n", objectKey, formatBytes(fileSize), formatBytes(uploadedTotal))
 		if cleanup {
 			if err := os.Remove(filename); err != nil {
 				return fmt.Errorf("cleanup local file %s: %w", filename, err)
@@ -399,13 +413,14 @@ func pollPipelineError(errCh <-chan error) error {
 }
 
 type asyncUploader struct {
-	ossWriter *writer.OSSWriter
-	cleanup   bool
-	queue     chan string
-	done      chan struct{}
-	wg        sync.WaitGroup
-	errOnce   sync.Once
-	err       error
+	ossWriter     *writer.OSSWriter
+	cleanup       bool
+	queue         chan string
+	done          chan struct{}
+	wg            sync.WaitGroup
+	errOnce       sync.Once
+	err           error
+	uploadedBytes atomic.Int64
 }
 
 func newAsyncUploader(ossWriter *writer.OSSWriter, cleanup bool, workers int) *asyncUploader {
@@ -442,12 +457,18 @@ func (u *asyncUploader) enqueue(filenames []string) error {
 func (u *asyncUploader) run() {
 	defer u.wg.Done()
 	for filename := range u.queue {
+		fileSize, err := localFileSize(filename)
+		if err != nil {
+			u.setError(fmt.Errorf("stat upload file %s: %w", filename, err))
+			continue
+		}
 		objectKey, err := u.ossWriter.UploadFile(filename)
 		if err != nil {
 			u.setError(fmt.Errorf("upload %s to OSS: %w", filename, err))
 			continue
 		}
-		fmt.Printf("Uploaded to OSS: %s\n", objectKey)
+		total := u.uploadedBytes.Add(fileSize)
+		fmt.Printf("Uploaded to OSS: %s file_size=%s uploaded_total=%s\n", objectKey, formatBytes(fileSize), formatBytes(total))
 		if u.cleanup {
 			if err := os.Remove(filename); err != nil {
 				u.setError(fmt.Errorf("cleanup local file %s: %w", filename, err))
@@ -479,6 +500,27 @@ func (u *asyncUploader) setError(err error) {
 
 func (u *asyncUploader) currentError() error {
 	return u.err
+}
+
+func localFileSize(filename string) (int64, error) {
+	info, err := os.Stat(filename)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
+func formatBytes(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%dB", size)
+	}
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f%s", float64(size)/float64(div), []string{"KB", "MB", "GB", "TB", "PB"}[exp])
 }
 
 func parseArgs(args []string) (Options, error) {
@@ -513,6 +555,8 @@ func parseArgs(args []string) (Options, error) {
 	fs.StringVar(&options.RemapDst, "remap-dst", "", "Target time range: start,end")
 	fs.StringVar(&options.RemapStringField, "remap-string", "", "Remap a string field to int in copy mode")
 	fs.StringVar(&options.RemapStringValues, "remap-string-values", "", "Explicit string mapping: a:1,b:2")
+	fs.StringVar(&options.RemapIntStringField, "remap-int-string", "", "Remap an int field to string in copy mode")
+	fs.StringVar(&options.RemapIntStringValues, "remap-int-string-values", "", "Explicit int/string mapping: 1:a,2:b or a:1,b:2")
 	fs.BoolVar(&options.TVFImport, "tvf-import", false, "Import parquet files from S3/OSS into Doris via S3 TVF")
 	fs.IntVar(&options.TVFBatchFiles, "batch-files", 10, "Number of parquet files per TVF batch")
 	fs.StringVar(&options.TVFLogType, "tvf-log-type", "", "Only import parquet files for one generated log type suffix, e.g. nginx_access")
@@ -520,6 +564,8 @@ func parseArgs(args []string) (Options, error) {
 	fs.StringVar(&options.TVFRemapValues, "tvf-remap-string-values", "", "Explicit TVF string mapping: a:1,b:2")
 	fs.StringVar(&options.TVFCluster, "tvf-cluster", "", "Doris cluster name for TVF import; runs USE @cluster before each insert")
 	fs.BoolVar(&options.SkipSchemaCheck, "skip-schema-check", true, "Skip parquet schema validation for TVF import")
+	fs.BoolVar(&options.S3Import, "s3-import", false, "Import parquet files from S3-compatible storage into Doris via Stream Load")
+	fs.StringVar(&options.S3Region, "s3-region", "", "S3 region for SigV4 signing")
 	fs.StringVar(&options.DDL, "ddl", "", "CREATE TABLE DDL statement")
 	fs.StringVar(&options.DDLFile, "ddl-file", "", "Path to SQL file containing CREATE TABLE statement")
 	fs.StringVar(&options.Demo, "demo", "", "Demo data in CSV format or JSON object")
@@ -577,6 +623,9 @@ func parseArgs(args []string) (Options, error) {
 		if options.CopyMode != "partition" && options.CopyMode != "tablet" {
 			return options, fmt.Errorf("--copy-mode must be partition or tablet")
 		}
+		if options.RemapIntStringField != "" && options.RemapIntStringValues == "" {
+			return options, fmt.Errorf("--remap-int-string requires --remap-int-string-values")
+		}
 		return options, nil
 	}
 	if options.TVFImport {
@@ -603,6 +652,21 @@ func parseArgs(args []string) (Options, error) {
 		}
 		if options.TVFCluster != "" && escapeClusterName(options.TVFCluster) != strings.TrimSpace(options.TVFCluster) {
 			return options, fmt.Errorf("--tvf-cluster contains invalid characters: %s", options.TVFCluster)
+		}
+		return options, nil
+	}
+	if options.S3Import {
+		if options.OSSBucket == "" || options.OSSPath == "" || options.OSSEndpoint == "" || options.OSSAK == "" || options.OSSSK == "" {
+			return options, fmt.Errorf("--s3-import requires --oss-bucket, --oss-path, --oss-endpoint, --oss-ak and --oss-sk")
+		}
+		if options.DorisHost == "" || options.DorisDatabase == "" || options.DorisTable == "" {
+			return options, fmt.Errorf("--s3-import requires --doris-host, --doris-database and --doris-table")
+		}
+		if options.S3Region == "" {
+			return options, fmt.Errorf("--s3-import requires --s3-region")
+		}
+		if options.TVFBatchFiles <= 0 {
+			options.TVFBatchFiles = 10
 		}
 		return options, nil
 	}

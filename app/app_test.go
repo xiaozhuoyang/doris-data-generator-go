@@ -262,6 +262,27 @@ func TestParseArgsTVFRemapReusesCopyRemapFlags(t *testing.T) {
 	}
 }
 
+func TestCopyIntStringRemapAcceptsStringIntPairs(t *testing.T) {
+	cfg := copyConfig{
+		remapIntStringField:  "app",
+		remapIntStringValues: "matrix-agent-manager:100001,o'clock:100002",
+	}
+	if err := cfg.buildIntStringMap(); err != nil {
+		t.Fatalf("buildIntStringMap returned error: %v", err)
+	}
+	sql := cfg.buildSelectExpr("app")
+	expectedFragments := []string{
+		"WHEN `app` = 100001 THEN 'matrix-agent-manager'",
+		"WHEN `app` = 100002 THEN 'o''clock'",
+		"ELSE CAST(`app` AS STRING) END",
+	}
+	for _, fragment := range expectedFragments {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected SQL to contain %q, got:\n%s", fragment, sql)
+		}
+	}
+}
+
 func TestParseArgsTVFClusterReusesClusterFlag(t *testing.T) {
 	options, err := parseArgs([]string{
 		"--tvf-import",

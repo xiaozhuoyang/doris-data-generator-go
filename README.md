@@ -10,6 +10,7 @@
 - Split generated Parquet files by log type suffix, for example `*.nginx_access.parquet` and `*.json_log_large.parquet`.
 - Upload generated files to Aliyun OSS / S3-compatible object storage.
 - Import Parquet files from OSS/S3 into Doris by S3 TVF.
+- Import Parquet files from S3-compatible object storage into Doris through concurrent Stream Load.
 - Filter TVF import by generated log type suffix.
 - Remap string fields to integer values during TVF import or table copy.
 - Copy Doris table data by partition or tablet.
@@ -239,6 +240,39 @@ Preview generated SQL without executing:
 ```
 
 If `--tvf-log-type` is omitted, all Parquet files under `--oss-path` are imported.
+
+## Stream Load From S3-Compatible Storage
+
+Use this mode when generated Parquet files already exist in OSS, AWS S3, MinIO, Ceph RGW, or another S3-compatible object store, and you want to benchmark Doris Stream Load independently from data generation.
+
+```bash
+./doris-data-generator \
+  --s3-import \
+  --oss-bucket minimax-selectdb-test \
+  --oss-path /doris/generated/logtest/ \
+  --oss-endpoint oss-cn-shanghai-internal.aliyuncs.com \
+  --oss-ak "$S3_AK" \
+  --oss-sk "$S3_SK" \
+  --oss-addressing-style virtual-host \
+  --s3-region cn-shanghai \
+  --tvf-log-type json_log_large \
+  --doris-host 127.0.0.1 \
+  --doris-port 8030 \
+  --doris-database minimax \
+  --doris-table json_log_large_table \
+  --doris-user root \
+  --doris-password "$DORIS_PASSWORD" \
+  --parallel 16
+```
+
+Notes:
+
+- `--s3-import` reads Parquet files from S3-compatible storage and sends each file as a Doris Stream Load request with `format=parquet`.
+- `--parallel` controls concurrent object downloads and Stream Load requests.
+- `--tvf-log-type` can be reused as a file suffix filter, for example `json_log_large` matches `*.json_log_large.parquet`.
+- `--oss-*` parameters are kept for compatibility; in this mode they mean S3-compatible bucket, prefix, endpoint, access key, and secret key.
+- `--s3-region` is required for AWS Signature V4 signing. For MinIO or other S3-compatible services, use the region configured by that service, often `us-east-1`.
+- Do not pass `--group-commit` unless you explicitly want `group_commit=async_mode`.
 
 Run TVF import in a Doris compute cluster:
 

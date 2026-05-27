@@ -41,30 +41,33 @@ type copyJob struct {
 }
 
 type copyConfig struct {
-	host               string
-	port               int
-	user               string
-	password           string
-	database           string
-	cluster            string
-	sourceTable        string
-	targetTable        string
-	concurrency        int
-	logFile            string
-	dryRun             bool
-	resume             bool
-	mode               string
-	remapField         string
-	remapSrcStart      int64
-	remapSrcEnd        int64
-	remapDstStart      int64
-	remapDstEnd        int64
-	remapStringField   string
-	remapStringValues  string
-	remapIsMs          bool
-	remapColType       string
-	remapStringColType string
-	stringMap          map[string]int
+	host                 string
+	port                 int
+	user                 string
+	password             string
+	database             string
+	cluster              string
+	sourceTable          string
+	targetTable          string
+	concurrency          int
+	logFile              string
+	dryRun               bool
+	resume               bool
+	mode                 string
+	remapField           string
+	remapSrcStart        int64
+	remapSrcEnd          int64
+	remapDstStart        int64
+	remapDstEnd          int64
+	remapStringField     string
+	remapStringValues    string
+	remapIntStringField  string
+	remapIntStringValues string
+	remapIsMs            bool
+	remapColType         string
+	remapStringColType   string
+	stringMap            map[string]int
+	intStringMap         map[int]string
 }
 
 func runDorisCopy(options Options) error {
@@ -88,26 +91,28 @@ func runDorisCopy(options Options) error {
 		}
 	}
 	cfg := copyConfig{
-		host:              options.Host,
-		port:              options.Port,
-		user:              options.User,
-		password:          options.Password,
-		database:          options.DorisDatabase,
-		cluster:           options.Cluster,
-		sourceTable:       options.SourceTable,
-		targetTable:       options.TargetTable,
-		concurrency:       maxInt(1, options.Parallel),
-		logFile:           options.LogFile,
-		dryRun:            options.DryRun,
-		resume:            options.Resume,
-		mode:              options.CopyMode,
-		remapField:        options.RemapField,
-		remapSrcStart:     remapSrcStart,
-		remapSrcEnd:       remapSrcEnd,
-		remapDstStart:     remapDstStart,
-		remapDstEnd:       remapDstEnd,
-		remapStringField:  options.RemapStringField,
-		remapStringValues: options.RemapStringValues,
+		host:                 options.Host,
+		port:                 options.Port,
+		user:                 options.User,
+		password:             options.Password,
+		database:             options.DorisDatabase,
+		cluster:              options.Cluster,
+		sourceTable:          options.SourceTable,
+		targetTable:          options.TargetTable,
+		concurrency:          maxInt(1, options.Parallel),
+		logFile:              options.LogFile,
+		dryRun:               options.DryRun,
+		resume:               options.Resume,
+		mode:                 options.CopyMode,
+		remapField:           options.RemapField,
+		remapSrcStart:        remapSrcStart,
+		remapSrcEnd:          remapSrcEnd,
+		remapDstStart:        remapDstStart,
+		remapDstEnd:          remapDstEnd,
+		remapStringField:     options.RemapStringField,
+		remapStringValues:    options.RemapStringValues,
+		remapIntStringField:  options.RemapIntStringField,
+		remapIntStringValues: options.RemapIntStringValues,
 	}
 	return cfg.run()
 }
@@ -140,6 +145,9 @@ func (c *copyConfig) run() error {
 		return err
 	}
 	if err := c.buildStringMap(); err != nil {
+		return err
+	}
+	if err := c.buildIntStringMap(); err != nil {
 		return err
 	}
 
@@ -357,6 +365,44 @@ func (c *copyConfig) buildStringMap() error {
 	return nil
 }
 
+func (c *copyConfig) buildIntStringMap() error {
+	if c.remapIntStringField == "" {
+		return nil
+	}
+	if strings.TrimSpace(c.remapIntStringValues) == "" {
+		return fmt.Errorf("--remap-int-string requires --remap-int-string-values")
+	}
+	c.intStringMap = map[int]string{}
+	for _, pair := range strings.Split(c.remapIntStringValues, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		kv := strings.SplitN(pair, ":", 2)
+		if len(kv) != 2 {
+			return fmt.Errorf("invalid --remap-int-string-values pair %q, expected int:string or string:int", pair)
+		}
+		left := strings.TrimSpace(kv[0])
+		right := strings.TrimSpace(kv[1])
+		if left == "" || right == "" {
+			return fmt.Errorf("invalid --remap-int-string-values pair %q: empty key or value", pair)
+		}
+		if n, err := strconv.Atoi(left); err == nil {
+			c.intStringMap[n] = right
+			continue
+		}
+		n, err := strconv.Atoi(right)
+		if err != nil {
+			return fmt.Errorf("invalid --remap-int-string-values pair %q, one side must be an int", pair)
+		}
+		c.intStringMap[n] = left
+	}
+	if len(c.intStringMap) == 0 {
+		return fmt.Errorf("--remap-int-string-values did not contain any valid mapping")
+	}
+	return nil
+}
+
 func (c *copyConfig) getPartitions() ([]copyPartitionInfo, error) {
 	headers, rows, err := c.runMysqlTableQuery("SHOW PARTITIONS FROM " + c.database + "." + c.sourceTable)
 	if err != nil {
@@ -462,6 +508,21 @@ func firstPartitionName(partitions []copyPartitionInfo) string {
 }
 
 func (c *copyConfig) buildSelectExpr(col string) string {
+	if c.remapIntStringField != "" && col == c.remapIntStringField && len(c.intStringMap) > 0 {
+		keys := make([]int, 0, len(c.intStringMap))
+		for key := range c.intStringMap {
+			keys = append(keys, key)
+		}
+		sort.Ints(keys)
+		var sb strings.Builder
+		sb.WriteString("CASE")
+		for _, key := range keys {
+			value := strings.ReplaceAll(c.intStringMap[key], "'", "''")
+			sb.WriteString(fmt.Sprintf(" WHEN `%s` = %d THEN '%s'", col, key, value))
+		}
+		sb.WriteString(fmt.Sprintf(" ELSE CAST(`%s` AS STRING) END", col))
+		return sb.String()
+	}
 	if c.remapStringField != "" && col == c.remapStringField && len(c.stringMap) > 0 {
 		keys := make([]string, 0, len(c.stringMap))
 		for key := range c.stringMap {
