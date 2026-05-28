@@ -87,6 +87,7 @@ type Options struct {
 	DorisPassword        string
 	DorisBatchSize       int
 	StreamLoadParallel   int
+	OrderedStreamLoad    bool
 	GroupCommit          bool
 	NoUpload             bool
 	NoParquet            bool
@@ -597,6 +598,7 @@ func parseArgs(args []string) (Options, error) {
 	fs.StringVar(&options.DorisPassword, "doris-password", "", "Doris password")
 	fs.IntVar(&options.DorisBatchSize, "doris-batch-size", 10000, "Doris stream load batch size")
 	fs.IntVar(&options.StreamLoadParallel, "stream-load-parallel", 0, "Number of Doris Stream Load workers (default: parallel)")
+	fs.BoolVar(&options.OrderedStreamLoad, "ordered-stream-load", false, "Run Stream Load in file/batch order for time-series imports")
 	fs.BoolVar(&options.GroupCommit, "group-commit", false, "Enable Doris group commit")
 	fs.BoolVar(&options.NoUpload, "no-upload", false, "Disable upload even if configured")
 	fs.BoolVar(&options.NoParquet, "no-parquet", false, "Skip parquet generation")

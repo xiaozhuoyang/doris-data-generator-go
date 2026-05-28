@@ -55,6 +55,9 @@ func runS3StreamLoadImport(options Options) error {
 	fmt.Printf("Target: %s.%s\n", options.DorisDatabase, options.DorisTable)
 	fmt.Printf("Doris:  %s@%s:%d\n", options.DorisUser, options.DorisHost, options.DorisPort)
 	fmt.Printf("Concurrency: %d\n", resolveStreamLoadParallelism(options.StreamLoadParallel, maxInt(1, options.Parallel)))
+	if options.OrderedStreamLoad {
+		fmt.Println("Ordered Stream Load: enabled")
+	}
 	if options.TVFLogType != "" {
 		fmt.Printf("Log type filter: %s\n", options.TVFLogType)
 	}
@@ -108,6 +111,9 @@ func runS3StreamLoadImport(options Options) error {
 
 func executeS3StreamLoads(objects []writer.S3Object, s3Client *writer.S3Client, dorisWriter *writer.DorisWriter, options Options) []s3StreamLoadResult {
 	workers := resolveStreamLoadParallelism(options.StreamLoadParallel, maxInt(1, options.Parallel))
+	if options.OrderedStreamLoad {
+		workers = 1
+	}
 	jobs := make(chan s3StreamLoadJob)
 	results := make(chan s3StreamLoadResult, len(objects))
 	var wg sync.WaitGroup

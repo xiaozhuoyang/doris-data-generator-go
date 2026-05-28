@@ -339,6 +339,23 @@ func TestParseArgsSupportsStreamLoadParallel(t *testing.T) {
 	}
 }
 
+func TestParseArgsSupportsOrderedStreamLoad(t *testing.T) {
+	options, err := parseArgs([]string{
+		"--ddl", "CREATE TABLE t1 (id BIGINT)",
+		"--doris-host", "127.0.0.1",
+		"--doris-database", "db",
+		"--doris-table", "tbl",
+		"--no-parquet",
+		"--ordered-stream-load",
+	})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if !options.OrderedStreamLoad {
+		t.Fatalf("expected ordered stream load, got %#v", options)
+	}
+}
+
 func TestLoadConfigJSONFromFile(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "generator.json")

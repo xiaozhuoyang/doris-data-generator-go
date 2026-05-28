@@ -150,6 +150,10 @@ func runDorisOnlyStreaming(
 ) error {
 	generatorCount := maxInt(1, options.Parallel)
 	writerCount := resolveStreamLoadParallelism(options.StreamLoadParallel, generatorCount)
+	if options.OrderedStreamLoad {
+		generatorCount = 1
+		writerCount = 1
+	}
 	batchSize := maxInt(1, options.DorisBatchSize)
 	bufferSize := maxInt(1, options.PipelineBuffer) * maxInt(generatorCount, writerCount)
 	taskCh := make(chan streamLoadBatchTask, bufferSize)

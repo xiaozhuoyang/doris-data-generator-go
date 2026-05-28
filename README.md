@@ -188,6 +188,7 @@ Parameter guidance:
 
 - `--parallel` controls data generation workers.
 - `--stream-load-parallel` controls concurrent Stream Load requests. If omitted, it defaults to `--parallel`.
+- `--ordered-stream-load` forces one generator and one Stream Load worker so generated batches are loaded in timestamp offset order.
 - `--doris-batch-size` controls rows per Stream Load request.
 - `--pipeline-buffer` controls how many generated batches can wait in memory per worker group.
 - `--doris-port` is the Doris FE HTTP port, usually `8030`, not the MySQL port `9030`.
@@ -262,13 +263,15 @@ Use this mode when generated Parquet files already exist in OSS, AWS S3, MinIO, 
   --doris-table json_log_large_table \
   --doris-user root \
   --doris-password "$DORIS_PASSWORD" \
-  --parallel 16
+  --parallel 16 \
+  --ordered-stream-load
 ```
 
 Notes:
 
 - `--s3-import` reads Parquet files from S3-compatible storage and sends each file as a Doris Stream Load request with `format=parquet`.
 - `--parallel` controls concurrent object downloads and Stream Load requests.
+- `--ordered-stream-load` imports sorted Parquet object keys one by one. Use it when files are generated in chronological filename order and Doris must receive them in that same order.
 - `--tvf-log-type` can be reused as a file suffix filter, for example `json_log_large` matches `*.json_log_large.parquet`.
 - `--oss-*` parameters are kept for compatibility; in this mode they mean S3-compatible bucket, prefix, endpoint, access key, and secret key.
 - `--s3-region` is required for AWS Signature V4 signing. For MinIO or other S3-compatible services, use the region configured by that service, often `us-east-1`.
