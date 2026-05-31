@@ -271,7 +271,7 @@ Notes:
 
 - `--s3-import` reads Parquet files from S3-compatible storage and sends each file as a Doris Stream Load request with `format=parquet`.
 - `--parallel` controls concurrent object downloads and Stream Load requests.
-- `--ordered-stream-load` imports sorted Parquet object keys in ordered concurrency windows. With `--parallel 16`, files `1-16` are loaded concurrently, then `17-32`, and so on.
+- `--ordered-stream-load` submits sorted Parquet object keys to the worker pool in order. With `--parallel 16`, up to 16 files load concurrently while new work is fed in sorted order as workers become available.
 - `--tvf-log-type` can be reused as a file suffix filter, for example `json_log_large` matches `*.json_log_large.parquet`.
 - `--oss-*` parameters are kept for compatibility; in this mode they mean S3-compatible bucket, prefix, endpoint, access key, and secret key.
 - `--s3-region` is required for AWS Signature V4 signing. For MinIO or other S3-compatible services, use the region configured by that service, often `us-east-1`.
