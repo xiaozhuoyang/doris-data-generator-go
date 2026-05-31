@@ -56,7 +56,7 @@ func runS3StreamLoadImport(options Options) error {
 	fmt.Printf("Doris:  %s@%s:%d\n", options.DorisUser, options.DorisHost, options.DorisPort)
 	fmt.Printf("Concurrency: %d\n", resolveStreamLoadParallelism(options.StreamLoadParallel, maxInt(1, options.Parallel)))
 	if options.OrderedStreamLoad {
-		fmt.Println("Ordered Stream Load: enabled")
+		fmt.Printf("Ordered Stream Load: enabled, window size %d\n", resolveStreamLoadParallelism(options.StreamLoadParallel, maxInt(1, options.Parallel)))
 	}
 	if options.TVFLogType != "" {
 		fmt.Printf("Log type filter: %s\n", options.TVFLogType)
@@ -112,7 +112,7 @@ func runS3StreamLoadImport(options Options) error {
 func executeS3StreamLoads(objects []writer.S3Object, s3Client *writer.S3Client, dorisWriter *writer.DorisWriter, options Options) []s3StreamLoadResult {
 	workers := resolveStreamLoadParallelism(options.StreamLoadParallel, maxInt(1, options.Parallel))
 	if options.OrderedStreamLoad {
-		workers = 1
+		return executeS3StreamLoadsInOrderedWindows(objects, s3Client, dorisWriter, options, workers)
 	}
 	jobs := make(chan s3StreamLoadJob)
 	results := make(chan s3StreamLoadResult, len(objects))
@@ -155,6 +155,53 @@ func executeS3StreamLoads(objects []writer.S3Object, s3Client *writer.S3Client, 
 		collected = append(collected, result)
 	}
 	return collected
+}
+
+func executeS3StreamLoadsInOrderedWindows(objects []writer.S3Object, s3Client *writer.S3Client, dorisWriter *writer.DorisWriter, options Options, workers int) []s3StreamLoadResult {
+	if workers <= 0 {
+		workers = 1
+	}
+	collected := make([]s3StreamLoadResult, 0, len(objects))
+	var done atomic.Int64
+
+	for start := 0; start < len(objects); start += workers {
+		end := minInt(start+workers, len(objects))
+		results := make(chan s3StreamLoadResult, end-start)
+		var wg sync.WaitGroup
+
+		for idx := start; idx < end; idx++ {
+			job := s3StreamLoadJob{index: idx, object: objects[idx]}
+			wg.Add(1)
+			go func(job s3StreamLoadJob) {
+				defer wg.Done()
+				result := runOneS3StreamLoad(job, s3Client, dorisWriter, options)
+				current := done.Add(1)
+				printS3StreamLoadResult(current, len(objects), job, result)
+				results <- result
+			}(job)
+		}
+
+		wg.Wait()
+		close(results)
+		for result := range results {
+			collected = append(collected, result)
+		}
+	}
+
+	return collected
+}
+
+func printS3StreamLoadResult(current int64, total int, job s3StreamLoadJob, result s3StreamLoadResult) {
+	status := "SUCCESS"
+	if !result.success {
+		status = "FAILED"
+	}
+	message := ""
+	if !result.success && result.message != "" {
+		message = " error=" + result.message
+	}
+	fmt.Printf("[%d/%d] file %d %s size=%d duration=%dms key=%s%s\n",
+		current, total, job.index+1, status, result.size, result.durationMs, result.objectKey, message)
 }
 
 func runOneS3StreamLoad(job s3StreamLoadJob, s3Client *writer.S3Client, dorisWriter *writer.DorisWriter, options Options) s3StreamLoadResult {
