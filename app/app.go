@@ -63,6 +63,7 @@ type Options struct {
 	Rows                 int
 	Partitions           int
 	FileSize             string
+	TotalSize            string
 	Output               string
 	OSSBucket            string
 	OSSPath              string
@@ -123,6 +124,11 @@ func Run(args []string) error {
 	fmt.Printf("Parsed %d columns:\n", len(columns))
 	for _, col := range columns {
 		fmt.Printf("  - %s: %s\n", col.Name, col.Type)
+	}
+	if options.TotalSize != "" {
+		if err := applyTotalSizeRows(&options, columns); err != nil {
+			return err
+		}
 	}
 
 	if options.Demo != "" || options.DemoFile != "" {
@@ -575,6 +581,7 @@ func parseArgs(args []string) (Options, error) {
 	fs.IntVar(&options.Rows, "rows", 1000000, "Total number of rows to generate")
 	fs.IntVar(&options.Partitions, "partitions", 10, "Number of output partitions")
 	fs.StringVar(&options.FileSize, "file-size", "", "Target file size, e.g. 128MB or 1GB")
+	fs.StringVar(&options.TotalSize, "total-size", "", "Estimated total generated data size, e.g. 1TB")
 	fs.StringVar(&options.Output, "output", "./data", "Output directory")
 	fs.StringVar(&options.OSSBucket, "oss-bucket", "", "OSS bucket name")
 	fs.StringVar(&options.OSSPath, "oss-path", "/data/", "OSS upload path")
@@ -685,6 +692,11 @@ func parseArgs(args []string) (Options, error) {
 	if options.FileSize != "" && options.Partitions != 10 {
 		return options, fmt.Errorf("--file-size and --partitions are mutually exclusive")
 	}
+	if options.TotalSize != "" {
+		if _, err := parseFileSize(options.TotalSize); err != nil {
+			return options, fmt.Errorf("--total-size: %w", err)
+		}
+	}
 	if options.Rows <= 0 {
 		return options, fmt.Errorf("--rows must be greater than 0")
 	}
@@ -738,6 +750,7 @@ func loadConfigJSON(options Options) (map[string]any, error) {
 func buildGeneratorConfig(options Options, configJSON map[string]any) config.GeneratorConfig {
 	generatorConfig := config.NewGeneratorConfig()
 	generatorConfig.Rows = options.Rows
+	generatorConfig.TotalSize = options.TotalSize
 	generatorConfig.Partitions = options.Partitions
 	generatorConfig.OutputDir = options.Output
 	generatorConfig.BatchSize = options.BatchSize
@@ -1003,9 +1016,10 @@ func parseFileSize(sizeStr string) (int, error) {
 		"KB": 1024,
 		"MB": 1024 * 1024,
 		"GB": 1024 * 1024 * 1024,
+		"TB": 1024 * 1024 * 1024 * 1024,
 	}
 
-	for _, unit := range []string{"GB", "MB", "KB", "B"} {
+	for _, unit := range []string{"TB", "GB", "MB", "KB", "B"} {
 		if strings.HasSuffix(sizeStr, unit) {
 			number := strings.TrimSpace(strings.TrimSuffix(sizeStr, unit))
 			value, err := strconv.ParseFloat(number, 64)
@@ -1021,6 +1035,21 @@ func parseFileSize(sizeStr string) (int, error) {
 		return 0, fmt.Errorf("invalid file size: %s", sizeStr)
 	}
 	return value, nil
+}
+
+func applyTotalSizeRows(options *Options, columns []config.Column) error {
+	totalSize, err := parseFileSize(options.TotalSize)
+	if err != nil {
+		return fmt.Errorf("parse total size: %w", err)
+	}
+	rowSize := maxInt(1, estimateRowSize(columns))
+	rows := int(math.Ceil(float64(totalSize) / float64(rowSize)))
+	if rows <= 0 {
+		rows = 1
+	}
+	options.Rows = rows
+	fmt.Printf("Resolved --total-size %s to --rows %d using estimated row size %d bytes\n", options.TotalSize, options.Rows, rowSize)
+	return nil
 }
 
 func estimateRowSize(columns []config.Column) int {

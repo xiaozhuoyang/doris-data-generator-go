@@ -97,6 +97,28 @@ func TestDatetimeScaleGeneratesMicroseconds(t *testing.T) {
 	}
 }
 
+func TestDatetimeSequenceCoversConfiguredRange(t *testing.T) {
+	cfg := config.NewGeneratorConfig()
+	cfg.Rows = 3
+	cfg.DatetimeRange = []string{"2026-03-25 00:00:00", "2026-03-26 23:59:59"}
+	field := config.NewFieldConfig("DATETIME")
+	factory := NewDataFactory(cfg, map[string]config.FieldConfig{"_ctime_": field})
+
+	first := factory.GenerateValue("_ctime_", "DATETIME", field, nil)
+	middle := factory.GenerateValue("_ctime_", "DATETIME", field, nil)
+	last := factory.GenerateValue("_ctime_", "DATETIME", field, nil)
+
+	if first != "2026-03-25 00:00:00" {
+		t.Fatalf("unexpected first datetime: %#v", first)
+	}
+	if middle == first || middle == last {
+		t.Fatalf("expected middle datetime between endpoints, got first=%#v middle=%#v last=%#v", first, middle, last)
+	}
+	if last != "2026-03-26 23:59:59" {
+		t.Fatalf("unexpected last datetime: %#v", last)
+	}
+}
+
 func TestDateOnlyDatetimeRangeEndIncludesWholeDay(t *testing.T) {
 	end, err := parseDatetimeRangeBoundary("2026-03-26", true)
 	if err != nil {

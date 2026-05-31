@@ -14,6 +14,7 @@ import (
 
 type datetimeContext struct {
 	Start         time.Time
+	End           time.Time
 	TotalSeconds  int64
 	TimePoints    []time.Time
 	PartitionMode bool
@@ -27,6 +28,8 @@ type DataFactory struct {
 	rng                *rand.Rand
 	sequenceOffset     int64
 	timestampOffset    int64
+	timestampBase      int64
+	timestampRows      int64
 	partitionDateRange []string
 	datetimeCache      map[string]datetimeContext
 }
@@ -60,6 +63,8 @@ func (f *DataFactory) ResetCounters() {
 	f.counter = map[string]int{}
 	f.sequenceOffset = 0
 	f.timestampOffset = 0
+	f.timestampBase = 0
+	f.timestampRows = 0
 }
 
 func (f *DataFactory) SetSequenceOffset(offset int64) {
@@ -68,6 +73,11 @@ func (f *DataFactory) SetSequenceOffset(offset int64) {
 
 func (f *DataFactory) SetTimestampOffset(offset int64) {
 	f.timestampOffset = offset
+}
+
+func (f *DataFactory) SetTimestampWindow(baseOffset int64, rows int) {
+	f.timestampBase = baseOffset
+	f.timestampRows = int64(rows)
 }
 
 func (f *DataFactory) SetPartitionDateRange(dateRange []string) {
@@ -259,23 +269,46 @@ func (f *DataFactory) generateDatetime(fieldConfig config.FieldConfig, fieldName
 		return formatDatetimeValue(value, datetimeScale(fieldConfig))
 	}
 
-	var value time.Time
-	if context.PartitionMode {
-		randomSeconds := f.rng.Int63n(maxInt64(1, context.TotalSeconds))
-		if context.TotalSeconds <= 86400 {
-			randomSeconds = f.rng.Int63n(86400)
-		}
-		value = context.Start.Add(time.Duration(randomSeconds)*time.Second + randomFractionalDuration(f.rng, datetimeScale(fieldConfig)))
-	} else {
-		offset := f.timestampOffset % maxInt64(1, context.TotalSeconds)
-		f.timestampOffset++
-		value = context.Start.Add(time.Duration(offset)*time.Second + randomFractionalDuration(f.rng, datetimeScale(fieldConfig)))
-	}
+	value := f.sequentialDatetimeValue(context, datetimeScale(fieldConfig))
 
 	if strings.EqualFold(fieldConfig.Type, "DATE") {
 		return value.Format("2006-01-02")
 	}
 	return formatDatetimeValue(value, datetimeScale(fieldConfig))
+}
+
+func (f *DataFactory) sequentialDatetimeValue(context datetimeContext, scale int) time.Time {
+	offset := f.timestampOffset
+	f.timestampOffset++
+
+	totalRows := int64(f.config.Rows)
+	baseOffset := int64(0)
+	if context.PartitionMode && f.timestampRows > 0 {
+		totalRows = f.timestampRows
+		baseOffset = f.timestampBase
+	}
+	if totalRows <= 1 {
+		return context.Start
+	}
+
+	localOffset := offset - baseOffset
+	if localOffset < 0 {
+		localOffset = 0
+	}
+	if localOffset >= totalRows {
+		localOffset = totalRows - 1
+	}
+
+	delta := context.End.Sub(context.Start)
+	if delta <= 0 {
+		return context.Start
+	}
+	step := float64(delta) / float64(totalRows-1)
+	value := context.Start.Add(time.Duration(step * float64(localOffset)))
+	if scale <= 0 {
+		return value.Truncate(time.Second)
+	}
+	return value.Truncate(time.Microsecond)
 }
 
 func datetimeScale(fieldConfig config.FieldConfig) int {
@@ -441,6 +474,7 @@ func buildDatetimeContext(start, end time.Time, lowCardinality, partitionMode bo
 
 	return datetimeContext{
 		Start:         start,
+		End:           end,
 		TotalSeconds:  totalSeconds,
 		TimePoints:    timePoints,
 		PartitionMode: partitionMode,

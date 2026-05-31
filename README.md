@@ -130,7 +130,8 @@ Generate local Parquet files:
 
 Notes:
 
-- `datetime_range` is used for datetime-like columns such as `_ctime_`; generated values include microseconds.
+- `datetime_range` is used for datetime-like columns such as `_ctime_`; generated values are globally monotonic across the configured row count and include microseconds when the Doris type has fractional precision.
+- Use `--total-size` instead of `--rows` when you want the tool to estimate the row count from the schema and a target total data size.
 - When `msg.log_types` contains multiple log types, files are split by suffix. A file name may look like `data_20260507_145536.0049.nginx_access.parquet`.
 - If only one log type is needed, you can write `log_types` as a plain string like `"json_log_large"`, or as one-item array `[["json_log_large", 1.0]]`.
 - Larger `--chunksize` usually produces larger Parquet files.
@@ -379,6 +380,7 @@ Resume copy from log:
 ## Common Parameters
 
 - `--rows`: total generated rows.
+- `--total-size`: estimated total generated data size such as `500GB` or `1TB`; this resolves to `--rows` from the estimated row size.
 - `--chunksize`: rows per chunk/file group.
 - `--file-size`: target file size such as `128MB` or `1GB`; mutually exclusive with explicit `--partitions`.
 - `--parallel`: generator or execution concurrency.

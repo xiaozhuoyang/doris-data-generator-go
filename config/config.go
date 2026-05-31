@@ -40,6 +40,7 @@ func NewFieldConfig(fieldType string) FieldConfig {
 
 type GeneratorConfig struct {
 	Rows                 int
+	TotalSize            string
 	Partitions           int
 	OutputDir            string
 	BatchSize            int

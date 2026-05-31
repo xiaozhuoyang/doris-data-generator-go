@@ -17,6 +17,8 @@ type batchTask struct {
 	BatchIdx           int
 	BatchSize          int
 	TimestampOffset    int64
+	TimestampBase      int64
+	TimestampRows      int
 	PartitionDateRange []string
 }
 
@@ -31,6 +33,8 @@ type streamLoadBatchTask struct {
 	BatchIdx           int64
 	BatchSize          int
 	TimestampOffset    int64
+	TimestampBase      int64
+	TimestampRows      int
 	PartitionDateRange []string
 }
 
@@ -58,6 +62,9 @@ func generatePartitionRowsParallel(
 		localFactory.SetSequenceOffset(timestampOffset)
 		localFactory.SetTimestampOffset(timestampOffset)
 		if len(partitionDateRange) > 0 {
+			localFactory.SetTimestampWindow(timestampOffset, partitionRows)
+		}
+		if len(partitionDateRange) > 0 {
 			localFactory.SetPartitionDateRange(partitionDateRange)
 		}
 		return localFactory.GenerateBatch(columns, partitionRows), nil
@@ -76,6 +83,8 @@ func generatePartitionRowsParallel(
 			BatchIdx:           batchIdx,
 			BatchSize:          batchSize,
 			TimestampOffset:    timestampOffset + int64(rowsGenerated),
+			TimestampBase:      timestampOffset,
+			TimestampRows:      partitionRows,
 			PartitionDateRange: partitionDateRange,
 		})
 		rowsGenerated += batchSize
@@ -94,6 +103,9 @@ func generatePartitionRowsParallel(
 				localFactory := factory.NewDataFactory(genConfig, cloneFieldConfigs(fieldConfigs))
 				localFactory.SetSequenceOffset(task.TimestampOffset)
 				localFactory.SetTimestampOffset(task.TimestampOffset)
+				if len(task.PartitionDateRange) > 0 {
+					localFactory.SetTimestampWindow(task.TimestampBase, task.TimestampRows)
+				}
 				if len(task.PartitionDateRange) > 0 {
 					localFactory.SetPartitionDateRange(task.PartitionDateRange)
 				}
@@ -186,6 +198,7 @@ func runDorisOnlyStreaming(
 				localFactory.SetSequenceOffset(task.TimestampOffset)
 				localFactory.SetTimestampOffset(task.TimestampOffset)
 				if len(task.PartitionDateRange) > 0 {
+					localFactory.SetTimestampWindow(task.TimestampBase, task.TimestampRows)
 					localFactory.SetPartitionDateRange(task.PartitionDateRange)
 				} else {
 					localFactory.SetPartitionDateRange(nil)
@@ -248,6 +261,8 @@ func runDorisOnlyStreaming(
 				BatchIdx:           taskCount,
 				BatchSize:          currentBatchSize,
 				TimestampOffset:    int64(rowsStart + generated),
+				TimestampBase:      int64(rowsStart),
+				TimestampRows:      partitionRows,
 				PartitionDateRange: partitionDateRange,
 			}
 			taskCount++

@@ -22,6 +22,20 @@ func TestParseFileSize(t *testing.T) {
 	}
 }
 
+func TestApplyTotalSizeRows(t *testing.T) {
+	options := Options{TotalSize: "1KB"}
+	err := applyTotalSizeRows(&options, []config.Column{
+		{Name: "id", Type: "BIGINT"},
+		{Name: "ts", Type: "DATETIME"},
+	})
+	if err != nil {
+		t.Fatalf("applyTotalSizeRows returned error: %v", err)
+	}
+	if options.Rows != 54 {
+		t.Fatalf("expected 54 rows, got %d", options.Rows)
+	}
+}
+
 func TestBuildFieldConfigs(t *testing.T) {
 	columns := []config.Column{
 		{Name: "status", Type: "VARCHAR", TypeParams: map[string]int{"length": 16}},
